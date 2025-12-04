@@ -107,7 +107,7 @@ const App = () => {
         <header className="w-full shadow-lg p-3 z-20 sticky top-0" style={{ backgroundColor: ORANGE }}>
           <div className="flex justify-between items-center w-full max-w-3xl mx-auto"> 
             <div className="logo-container">
-              <img src="/vite.svg" alt="ILIGAN Food" className="logo-img" />
+              <img src="/logo.png" alt="ILIGAN Food" className="logo-img" />
               <div className="logo-glow"></div>
               <div className="logo-pulse"></div>
             </div>
