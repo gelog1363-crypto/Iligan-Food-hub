@@ -19,7 +19,6 @@ const ILIGAN_BRGYS = [
 ];
 
 export const Checkout = ({ setPage, cart, setCart, user }) => {
-  // --- State ---
   const [address, setAddress] = useState({
     name: "", phone: "", addressDetail: "", barangay: ILIGAN_BRGYS[0], payment: "COD"
   });
@@ -33,10 +32,9 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
   const [restaurants, setRestaurants] = useState([]);
   const [nearestRestaurant, setNearestRestaurant] = useState(null);
 
-  // total
   const totalGoods = useMemo(() => cart.reduce((s, it) => s + it.price * it.quantity, 0), [cart]);
 
-  // compute delivery fee dynamically
+  // compute delivery fee dynamically for UI
   const computeDeliveryFee = (km) => {
     if (km == null) return 50;
     if (km <= 2) return 30;
@@ -116,7 +114,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
     setEstimatedEtaMin(computeEtaMinutes(dkm));
   }, []);
 
-  // Shipping address string
   const buildShippingAddress = () => `Iligan City, Brgy. ${address.barangay} • ${address.addressDetail}`;
 
   // Place order
@@ -160,9 +157,9 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
         shipping_lat: finalLat,
         shipping_lng: finalLng,
         distance_km: distanceKm,
-        delivery_fee: deliveryFee, // auto-generated
         estimated_eta_minutes: estimatedEtaMin,
         restaurant_id: nearestRestaurant?.id || null
+        // delivery_fee removed to match DB schema
       };
 
       const { data: newOrder, error: orderError } = await supabase.from("orders").insert(orderPayload).select().single();
@@ -198,7 +195,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
     } finally { setLoading(false); }
   };
 
-  // Check delivery area (for Iligan we allow all barangays)
   useEffect(() => {
     setInDeliveryArea(ILIGAN_BRGYS.includes(address.barangay));
   }, [address.barangay]);
@@ -234,7 +230,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
               required
             />
 
-            {/* Barangay Dropdown */}
             <div>
               <label className="text-xs font-semibold text-gray-600 mb-1">Barangay (Iligan City Only)</label>
               <select
