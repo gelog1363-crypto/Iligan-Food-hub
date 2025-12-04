@@ -156,7 +156,6 @@ const orderPayload = {
   status: ORDER_STATUSES[0],
   shipping_lat: finalLat,
   shipping_lng: finalLng,
-  estimated_eta_minutes: estimatedEtaMin,
   restaurant_id: nearestRestaurant?.id || null
 };
 
