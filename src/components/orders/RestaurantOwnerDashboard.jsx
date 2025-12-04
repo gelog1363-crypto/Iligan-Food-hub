@@ -336,16 +336,23 @@ const RestaurantOwnerDashboard = () => {
             const { error } = await supabase
                 .from('orders')
                 .update({ status: newStatus })
-                .eq('id', orderId)
-                .select(); 
+                .eq('id', orderId);
 
             if (error) throw error;
-            setOrders(orders.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
+
+            setNotification({
+                message: `✅ Order updated to ${newStatus}`,
+                type: 'success'
+            });
+
+            await loadOrders();
         } catch (error) {
-            alert('Failed to update status. Check RLS policies on "orders".');
-            console.error(error);
+            setNotification({
+                message: `❌ Error updating order: ${error.message}`,
+                type: 'error'
+            });
         }
-    }, [orders]);
+    }, [loadOrders]);
 
     const loadOrders = useCallback(async () => {
         if (!myRestaurant) return;
@@ -700,6 +707,113 @@ const RestaurantOwnerDashboard = () => {
         return () => { mounted = false; };
     }, [myRestaurant?.image_url]);
 
+    // Add notification component
+    const NotificationToast = ({ message, type = 'success', onClose }) => {
+        useEffect(() => {
+            const timer = setTimeout(onClose, 4000);
+            return () => clearTimeout(timer);
+        }, [onClose]);
+
+        const bgColor = type === 'success' ? 'bg-green-50' : type === 'info' ? 'bg-blue-50' : 'bg-red-50';
+        const borderColor = type === 'success' ? 'border-green-200' : type === 'info' ? 'border-blue-200' : 'border-red-200';
+        const textColor = type === 'success' ? 'text-green-600' : type === 'info' ? 'text-blue-600' : 'text-red-600';
+
+        return (
+            <div className={`fixed top-4 right-4 p-4 ${bgColor} border ${borderColor} rounded-lg shadow-lg z-40 max-w-sm animate-pulse`}>
+                <p className={`text-sm font-medium ${textColor}`}>{message}</p>
+            </div>
+        );
+    };
+
+    // Add to RestaurantOwnerDashboard state
+    const [notification, setNotification] = useState(null);
+    const [orderNotifications, setOrderNotifications] = useState({});
+
+    // Add real-time order subscription with notifications
+    useEffect(() => {
+        if (!myRestaurant) return;
+
+        const subscription = supabase
+            .channel(`orders-${myRestaurant.id}`)
+            .on(
+                'postgres_changes',
+                {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'orders',
+                    filter: `restaurant_id=eq.${myRestaurant.id}`
+                },
+                (payload) => {
+                    const newOrder = payload.new;
+                    setNotification({
+                        message: `🎉 New Order! #${newOrder.id.slice(0, 8)} from ${newOrder.contact_name}`,
+                        type: 'success'
+                    });
+                    // Play notification sound (optional)
+                    playNotificationSound();
+                    // Reload orders
+                    loadOrders();
+                }
+            )
+            .subscribe();
+
+        return () => {
+            subscription.unsubscribe();
+        };
+    }, [myRestaurant, loadOrders]);
+
+    // Add real-time status change subscription
+    useEffect(() => {
+        if (!myRestaurant) return;
+
+        const subscription = supabase
+            .channel(`order-updates-${myRestaurant.id}`)
+            .on(
+                'postgres_changes',
+                {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'orders',
+                    filter: `restaurant_id=eq.${myRestaurant.id}`
+                },
+                (payload) => {
+                    const updatedOrder = payload.new;
+                    const previousOrder = payload.old;
+
+                    if (updatedOrder.status !== previousOrder.status) {
+                        setNotification({
+                            message: `📊 Order #${updatedOrder.id.slice(0, 8)} status updated to ${updatedOrder.status}`,
+                            type: 'info'
+                        });
+                        
+                        // Send notification to customer (you can implement this separately)
+                        sendCustomerStatusNotification(updatedOrder);
+                    }
+                }
+            )
+            .subscribe();
+
+        return () => {
+            subscription.unsubscribe();
+        };
+    }, [myRestaurant]);
+
+    // Play notification sound
+    const playNotificationSound = () => {
+        const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj==');
+        audio.play().catch(e => console.log('Audio play failed:', e));
+    };
+
+    // Send notification to customer about status change
+    const sendCustomerStatusNotification = async (order) => {
+        try {
+            // You can implement this via API call to send email/SMS/push notification
+            console.log(`Sending notification to customer about order ${order.id} status change to ${order.status}`);
+        } catch (error) {
+            console.error('Error sending customer notification:', error);
+        }
+    };
+
     if (!authReady) return <Loading />;
     if (!user) return <OwnerAuthPage onSuccess={setUser} />;
     if (!restaurantLoaded || (loading && !myRestaurant)) return <Loading />;
@@ -719,6 +833,15 @@ const RestaurantOwnerDashboard = () => {
 
     return (
         <div className="min-h-screen rod-dashboard" style={{ backgroundColor: LIGHT_BG }}>
+            {/* Show notification if exists */}
+            {notification && (
+                <NotificationToast
+                    message={notification.message}
+                    type={notification.type}
+                    onClose={() => setNotification(null)}
+                />
+            )}
+
             <header className="shadow-lg p-4 sticky top-0 z-20" style={{ backgroundColor: NAVY }}>
                 <div className="max-w-7xl mx-auto flex justify-between items-center text-white">
                     <div className="flex items-center gap-4">
@@ -930,4 +1053,4 @@ const RestaurantOwnerDashboard = () => {
     );
 };
 
-export default RestaurantOwnerDashboard;    
+export default RestaurantOwnerDashboard;
