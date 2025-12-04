@@ -147,17 +147,14 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
       }
 
 const orderPayload = {
-  user_id: user.id,
-  total: totalGoods,
-  shipping_address: shipping_address_combined,
-  contact_name: address.name,
-  contact_phone: address.phone,
-  payment_method: address.payment,
-  status: ORDER_STATUSES[0],
-  shipping_lat: finalLat,
-  shipping_lng: finalLng,
-  restaurant_id: nearestRestaurant?.id || null
-};
+        user_id: user.id,
+        total: total,
+        shipping_address: shipping_address_combined,
+        contact_name: address.name,
+        contact_phone: address.phone,
+        payment_method: address.payment,
+        status: ORDER_STATUSES[0], // Typically 'Pending' or 'New'
+      };
 
       const { data: newOrder, error: orderError } = await supabase.from("orders").insert(orderPayload).select().single();
       if (orderError) throw orderError;
