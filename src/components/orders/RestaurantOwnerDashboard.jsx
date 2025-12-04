@@ -1,6 +1,7 @@
 // components/owner/RestaurantOwnerDashboard.jsx - FINAL FIXED VERSION
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../../config/supabase';
+import './RestaurantOwnerDashboard.css';
 
 // --- CONSTANTS ---
 const ORANGE = '#FF8A00'; 
@@ -280,6 +281,16 @@ const RestaurantOwnerDashboard = () => {
         image_url: ''
     });
 
+    // Restaurant edit / image upload
+    const [showRestaurantModal, setShowRestaurantModal] = useState(false);
+    const [restaurantForm, setRestaurantForm] = useState({
+        name: '',
+        address_street: '',
+        address_barangay: '',
+        imageFile: null,
+        imagePreview: ''
+    });
+
     // --- FIX STARTS HERE ---
     // 1. Initialize state from Local Storage
     const [statusFilter, setStatusFilter] = useState(() => {
@@ -341,6 +352,7 @@ const RestaurantOwnerDashboard = () => {
         setLoading(true);
 
         try {
+            // fetch order items and include food_items.image_url when possible
             const { data: items, error: itemsError } = await supabase
                 .from('order_items')
                 .select(`
@@ -348,7 +360,8 @@ const RestaurantOwnerDashboard = () => {
                     name,
                     price,
                     quantity,
-                    food_items!inner ( restaurant_id )
+                    food_item_id,
+                    food_items!inner ( restaurant_id, food_item_id, image_url )
                 `)
                 .eq('food_items.restaurant_id', myRestaurant.id);
 
@@ -368,25 +381,28 @@ const RestaurantOwnerDashboard = () => {
                 .in('id', uniqueOrderIds)
                 .order('created_at', { ascending: false });
             if (ordersError) throw ordersError;
-
-            const fullOrders = ordersData.map(order => {
-                const relevantItems = items
-                    .filter(i => i.order_id === order.id)
-                    .map(i => ({
+            const fullOrders = await Promise.all(ordersData.map(async order => {
+                const relevantItemsRaw = items.filter(i => i.order_id === order.id);
+                const relevantItems = await Promise.all(relevantItemsRaw.map(async i => {
+                    const rawImage = i.food_items?.image_url || i.image_url || null;
+                    const image_url = rawImage ? await resolveImageUrl(rawImage) : null;
+                    return {
                         food_item_id: i.food_item_id,
                         name: i.name,
                         price: i.price,
-                        quantity: i.quantity
-                    }));
-          
+                        quantity: i.quantity,
+                        image_url
+                    };
+                }));
+
                 const restaurantSubtotal = relevantItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-                
-                return { 
-                    ...order, 
-                    order_items: relevantItems, 
-                    restaurant_subtotal: restaurantSubtotal.toFixed(2) 
+
+                return {
+                    ...order,
+                    order_items: relevantItems,
+                    restaurant_subtotal: restaurantSubtotal.toFixed(2)
                 };
-            });
+            }));
             setOrders(fullOrders);
         } catch (error) {
             console.error('Error loading orders:', error);
@@ -400,7 +416,12 @@ const RestaurantOwnerDashboard = () => {
         try {
             const { data, error } = await supabase.from('food_items').select('*').eq('restaurant_id', myRestaurant.id).order('name');
             if (error) throw error;
-            setProducts(data || []);
+            // resolve any storage paths to public URLs for display
+            const resolved = await Promise.all((data || []).map(async p => ({
+                ...p,
+                image_url: p.image_url ? await resolveImageUrl(p.image_url) : null
+            })));
+            setProducts(resolved);
         } catch (error) {
             console.error('Error loading products:', error);
         }
@@ -463,6 +484,73 @@ const RestaurantOwnerDashboard = () => {
         setShowProductModal(true);
     }; 
 
+    // --- Restaurant image upload handlers ---
+    const handleRestaurantImageChange = (e) => {
+        const file = e.target.files?.[0] || null;
+        if (!file) return;
+        setRestaurantForm(prev => ({ ...prev, imageFile: file, imagePreview: URL.createObjectURL(file) }));
+    };
+
+    const uploadRestaurantImage = async (file) => {
+        if (!file) return null;
+        try {
+            const path = `${myRestaurant.id}/${Date.now()}_${file.name}`;
+            const { error: uploadError } = await supabase.storage.from('restaurant-images').upload(path, file, { upsert: true });
+            if (uploadError) {
+                // Provide a clearer error when bucket is missing
+                const msg = (uploadError.message || uploadError.error_description || '').toString();
+                if (msg.toLowerCase().includes('bucket') || msg.toLowerCase().includes('not found')) {
+                    throw new Error('Bucket "restaurant-images" not found. Create a public storage bucket named "restaurant-images" in your Supabase project or update the bucket name in the frontend code.');
+                }
+                throw uploadError;
+            }
+            const { data } = supabase.storage.from('restaurant-images').getPublicUrl(path);
+            return data?.publicUrl || null;
+        } catch (err) {
+            console.error('Upload error:', err);
+            throw err;
+        }
+    };
+
+    const handleSaveRestaurant = async () => {
+        if (!myRestaurant) return;
+        setLoading(true);
+        try {
+            let imageUrl = restaurantForm.imagePreview || myRestaurant.image_url || null;
+            if (restaurantForm.imageFile) {
+                try {
+                    imageUrl = await uploadRestaurantImage(restaurantForm.imageFile);
+                } catch (uploadErr) {
+                    // If bucket is missing, notify owner and continue saving without image
+                    if ((uploadErr.message || '').toLowerCase().includes('bucket "restaurant-images" not found')) {
+                        alert('Upload failed: storage bucket "restaurant-images" not found. Restaurant will be saved without the image. Create the bucket in Supabase Storage (public) or change the bucket name in the code.');
+                        imageUrl = myRestaurant.image_url || null;
+                    } else {
+                        throw uploadErr;
+                    }
+                }
+            }
+
+            const { error } = await supabase.from('restaurants').update({
+                name: restaurantForm.name,
+                address_street: restaurantForm.address_street,
+                address_barangay: restaurantForm.address_barangay,
+                image_url: imageUrl
+            }).eq('id', myRestaurant.id);
+
+            if (error) throw error;
+
+            const { data: updated } = await supabase.from('restaurants').select('*').eq('id', myRestaurant.id).single();
+            setMyRestaurant(updated);
+            setShowRestaurantModal(false);
+        } catch (err) {
+            console.error('Failed to save restaurant:', err);
+            alert('Failed to save restaurant: ' + (err.message || err));
+        } finally {
+            setLoading(false);
+        }
+    };
+
     useEffect(() => {
         if (!user || restaurantLoaded) return; 
         
@@ -487,6 +575,16 @@ const RestaurantOwnerDashboard = () => {
                     }
                     
                     setMyRestaurant(data || null);
+                    // initialize restaurant form with current data
+                    if (data) {
+                        setRestaurantForm(prev => ({
+                            ...prev,
+                            name: data.name || '',
+                            address_street: data.address_street || '',
+                            address_barangay: data.address_barangay || '',
+                            imagePreview: data.image_url || ''
+                        }));
+                    }
                     setRestaurantLoaded(true); 
                 }
             } catch (err) {
@@ -537,7 +635,8 @@ const RestaurantOwnerDashboard = () => {
         if (status === 'Driver Assigned' || status === 'Out for Delivery') { color = '#3B82F6'; bg = '#DBEAFE'; } // Blue
         if (status === 'Delivered' || status === 'Completed') { color = '#10B981'; bg = '#D1FAE5'; } // Green
         if (status === 'Cancelled') { color = '#EF4444'; bg = '#FEE2E2'; } // Red
-        return <span className="px-3 py-1 rounded-full text-xs font-bold" style={{ color, backgroundColor: bg }}>{status}</span>;
+        const pulse = status === 'Pending' ? 'rod-badge-pulse' : '';
+        return <span className={`px-3 py-1 rounded-full text-xs font-bold ${pulse}`} style={{ color, backgroundColor: bg }}>{status}</span>;
     };
 
     // FIXED: Updated flow
@@ -551,6 +650,55 @@ const RestaurantOwnerDashboard = () => {
         };
         return nextStatuses[current] || null;
     };
+
+    // Resolve image paths to usable public URLs.
+    const resolveImageUrl = async (imgPath) => {
+        if (!imgPath) return null;
+        // Accept object shapes (e.g. { url, path, publicUrl })
+        let raw = imgPath;
+        if (typeof raw === 'object') {
+            raw = raw.url || raw.path || raw.publicUrl || raw.public_url || raw.publicURL || raw.path_with_namespace || null;
+        }
+        if (!raw) return null;
+        raw = String(raw).trim();
+
+        // If already a full URL or data URI, use it directly
+        if (/^https?:\/\//i.test(raw) || raw.startsWith('data:')) return raw;
+
+        // Normalize path (remove leading slashes)
+        raw = raw.replace(/^\/+/, '');
+
+        const bucketsToTry = ['food-images', 'restaurant-images'];
+        for (const bucket of bucketsToTry) {
+            try {
+                const { data } = supabase.storage.from(bucket).getPublicUrl(raw);
+                const publicUrl = data?.publicUrl || data?.publicURL || data?.public_url || data?.url;
+                if (publicUrl) return publicUrl;
+            } catch (err) {
+                // ignore and try next
+            }
+        }
+        return null;
+    };
+
+    // If the restaurant record has an image path (not a full URL), resolve it once and update state
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            if (!myRestaurant?.image_url) return;
+            const raw = myRestaurant.image_url;
+            if (typeof raw === 'string' && (/^https?:\/\//i.test(raw) || raw.startsWith('data:'))) return;
+            try {
+                const resolved = await resolveImageUrl(raw);
+                if (mounted && resolved && resolved !== raw) {
+                    setMyRestaurant(prev => ({ ...(prev || {}), image_url: resolved }));
+                }
+            } catch (e) {
+                // ignore
+            }
+        })();
+        return () => { mounted = false; };
+    }, [myRestaurant?.image_url]);
 
     if (!authReady) return <Loading />;
     if (!user) return <OwnerAuthPage onSuccess={setUser} />;
@@ -570,16 +718,61 @@ const RestaurantOwnerDashboard = () => {
     }
 
     return (
-        <div className="min-h-screen" style={{ backgroundColor: LIGHT_BG }}>
+        <div className="min-h-screen rod-dashboard" style={{ backgroundColor: LIGHT_BG }}>
             <header className="shadow-lg p-4 sticky top-0 z-20" style={{ backgroundColor: NAVY }}>
                 <div className="max-w-7xl mx-auto flex justify-between items-center text-white">
-                    <div>
-                        <h1 className="text-xl md:text-2xl font-black">👨‍🍳 {myRestaurant.name}</h1>
-                        <p className="text-xs opacity-90">{myRestaurant.address_barangay}</p>
+                    <div className="flex items-center gap-4">
+                        {myRestaurant?.image_url ? (
+                            <img src={myRestaurant.image_url} alt={myRestaurant.name} className="w-14 h-14 object-cover rounded-lg border" />
+                        ) : (
+                            <div className="w-14 h-14 rounded-lg bg-white/10 flex items-center justify-center text-2xl">🍴</div>
+                        )}
+                        <div>
+                            <h1 className="text-xl md:text-2xl font-black">👨‍🍳 {myRestaurant.name}</h1>
+                            <p className="text-xs opacity-90">{myRestaurant.address_barangay}</p>
+                        </div>
                     </div>
-                    <button onClick={handleSignOut} className="px-4 py-1.5 rounded-full bg-white/20 hover:bg-white/30 text-sm font-bold">Logout</button>
+                    <div className="flex items-center gap-3">
+                        <button onClick={() => setShowRestaurantModal(true)} className="px-3 py-1.5 rounded-full bg-white/20 hover:bg-white/30 text-sm font-bold rod-btn">Edit</button>
+                        <button onClick={handleSignOut} className="px-4 py-1.5 rounded-full bg-white/20 hover:bg-white/30 text-sm font-bold rod-btn">Logout</button>
+                    </div>
                 </div>
             </header>
+
+            {showRestaurantModal && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+                        <h3 className="text-2xl font-bold mb-4" style={{ color: NAVY }}>Edit Restaurant</h3>
+                        <div className="space-y-3">
+                            <div>
+                                <label className="block text-xs font-bold mb-1" style={{ color: NAVY }}>Restaurant Name</label>
+                                <StyledInput type="text" value={restaurantForm.name} onChange={(e) => setRestaurantForm(prev => ({ ...prev, name: e.target.value }))} />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold mb-1" style={{ color: NAVY }}>Street</label>
+                                <StyledInput type="text" value={restaurantForm.address_street} onChange={(e) => setRestaurantForm(prev => ({ ...prev, address_street: e.target.value }))} />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold mb-1" style={{ color: NAVY }}>Barangay</label>
+                                <StyledInput type="text" value={restaurantForm.address_barangay} onChange={(e) => setRestaurantForm(prev => ({ ...prev, address_barangay: e.target.value }))} />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold mb-1" style={{ color: NAVY }}>Restaurant Image</label>
+                                <input type="file" accept="image/*" onChange={handleRestaurantImageChange} />
+                                {restaurantForm.imagePreview && (
+                                    <div className="mt-2">
+                                        <img src={restaurantForm.imagePreview} alt="preview" className="w-full h-48 object-cover rounded-lg" />
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex gap-3 mt-6">
+                            <button onClick={() => { setShowRestaurantModal(false); }} className="flex-1 py-3 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300">Cancel</button>
+                            <button onClick={handleSaveRestaurant} className="flex-1 py-3 text-white rounded-lg font-bold hover:opacity-90 transition" style={{ backgroundColor: ORANGE }}>Save</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div className="max-w-7xl mx-auto px-4 md:px-6">
                 <div className="flex gap-4 mt-6 border-b border-gray-200">
@@ -611,7 +804,7 @@ const RestaurantOwnerDashboard = () => {
                         ) : (
                             <div className="space-y-4">
                                 {filteredOrders.map(order => (
-                                    <div key={order.id} className="bg-white rounded-xl shadow-md overflow-hidden border-l-4" style={{ borderLeftColor: order.status === 'Completed' || order.status === 'Delivered' ? '#10B981' : ORANGE }}>
+                                    <div key={order.id} className="bg-white rounded-xl shadow-md overflow-hidden border-l-4 rod-card" style={{ borderLeftColor: order.status === 'Completed' || order.status === 'Delivered' ? '#10B981' : ORANGE }}>
                                         <div className="p-5">
                                             <div className="flex justify-between items-start mb-4 pb-3 border-b border-gray-100">
                                                 <div>
@@ -635,7 +828,7 @@ const RestaurantOwnerDashboard = () => {
                                                 </div>
                                             </div>
 
-                                            <button onClick={() => setExpandedOrder(expandedOrder === order.id ? null : order.id)} className="w-full text-left bg-gray-50 p-3 rounded-lg flex justify-between items-center hover:bg-gray-100 transition">
+                                            <button aria-expanded={expandedOrder === order.id} onClick={() => setExpandedOrder(expandedOrder === order.id ? null : order.id)} className="w-full text-left bg-gray-50 p-3 rounded-lg flex justify-between items-center hover:bg-gray-100 transition rod-toggle">
                                                 <span className="font-bold text-sm text-gray-700">View Items ({order.order_items.length})</span>
                                                 <span className="text-gray-400">{expandedOrder === order.id ? '▲' : '▼'}</span>
                                             </button>
@@ -644,7 +837,19 @@ const RestaurantOwnerDashboard = () => {
                                                 <div className="mt-2 bg-gray-50 rounded-lg p-3 space-y-2 border border-gray-100">
                                                     {order.order_items.map((item, idx) => (
                                                         <div key={item.food_item_id + idx} className="flex justify-between items-center text-sm">
-                                                            <div className="flex items-center gap-2"><span className="bg-white px-2 py-0.5 rounded border font-bold text-xs">x{item.quantity}</span><span>{item.name}</span></div>
+                                                            <div className="flex items-center gap-3">
+                                                                <div className="w-14 h-14 bg-gray-100 rounded overflow-hidden flex items-center justify-center">
+                                                                    {item.image_url ? (
+                                                                        <img src={item.image_url} alt={item.name} className="w-full h-full object-cover" />
+                                                                    ) : (
+                                                                        <div className="text-xs text-gray-400">No image</div>
+                                                                    )}
+                                                                </div>
+                                                                <div>
+                                                                    <div className="flex items-center gap-2"><span className="bg-white px-2 py-0.5 rounded border font-bold text-xs">x{item.quantity}</span><span className="font-semibold">{item.name}</span></div>
+                                                                    {item.description && <div className="text-xs text-gray-500">{item.description}</div>}
+                                                                </div>
+                                                            </div>
                                                             <span className="font-mono text-gray-600">₱{(item.price * item.quantity).toFixed(2)}</span>
                                                         </div>
                                                     ))}
@@ -654,10 +859,10 @@ const RestaurantOwnerDashboard = () => {
                                             {order.status !== 'Completed' && order.status !== 'Cancelled' && (
                                                 <div className="mt-5 flex gap-3">
                                                     {getNextStatus(order.status) && (
-                                                        <button onClick={() => updateOrderStatus(order.id, getNextStatus(order.status))} className="flex-1 py-3 text-white rounded-lg font-bold hover:opacity-90 transition shadow-lg" style={{ backgroundColor: ORANGE }}>
-                                                            Mark as {getNextStatus(order.status)}
-                                                        </button>
-                                                    )}
+                                                            <button onClick={() => updateOrderStatus(order.id, getNextStatus(order.status))} className="flex-1 py-3 text-white rounded-lg font-bold hover:opacity-90 transition shadow-lg rod-action-btn" style={{ backgroundColor: ORANGE }}>
+                                                                Mark as {getNextStatus(order.status)}
+                                                            </button>
+                                                        )}
                                                     {(order.status === 'Pending' || order.status === 'Preparing') && ( 
                                                         <button onClick={() => updateOrderStatus(order.id, 'Cancelled')} className="px-4 py-3 bg-red-100 text-red-600 rounded-lg font-bold hover:bg-red-200">Cancel Order</button>
                                                     )}
@@ -682,7 +887,7 @@ const RestaurantOwnerDashboard = () => {
                         ) : (
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                 {products.map(product => (
-                                    <div key={product.food_item_id} className="bg-white rounded-xl shadow-md overflow-hidden">
+                                    <div key={product.food_item_id} className="bg-white rounded-xl shadow-md overflow-hidden rod-card">
                                         {product.image_url && <img src={product.image_url} alt={product.name} className="w-full h-48 object-cover" />}
                                         <div className="p-4">
                                             <h3 className="font-bold text-lg mb-2">{product.name}</h3>
