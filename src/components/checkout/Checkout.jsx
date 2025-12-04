@@ -7,73 +7,111 @@ import { FoodButton } from "../common/FoodButton";
 import { StyledInput } from "../common/StyledInput";
 import { AddressMapPreview } from "./AddressMapPreview";
 
-// --- Full Iligan Barangays ---
-const ILIGAN_BRGYS = [
-  "Abuno","Acmac","Bagong Silang","Bonbonon","Bunawan","Buru‑un","Dalipuga",
-  "Del Carmen","Digkilaan","Ditucalan","Dulag","Hinaplanon","Hindang","Kabacsanan",
-  "Kalilangan","Kiwalan","Lanipao","Luinab","Mahayahay","Mainit","Mandulog",
-  "Maria Cristina","Pala‑o","Panoroganan","Poblacion","Puga‑an","Rogongon",
-  "San Miguel","San Roque","Saray‑Tibanga","Santa Elena","Santa Filomena","Santo Rosario",
-  "Suarez","Tambacan","Tibanga","Tipanoy","Tomas Cabili","Tubod","Ubaldo Laya",
-  "Upper Hinaplanon","Upper Tominobo","Villa Verde"
-];
-
 export const Checkout = ({ setPage, cart, setCart, user }) => {
-  // --- State ---
+  // Address info
   const [address, setAddress] = useState({
-    name: "", phone: "", addressDetail: "", barangay: ILIGAN_BRGYS[0], payment: "COD"
+    name: "",
+    phone: "",
+    addressDetail: "",
+    barangay: "",
+    payment: "COD",
   });
+
+  // App state
+  const [barangays, setBarangays] = useState([]);
+  const [deliveryZones, setDeliveryZones] = useState([]);
+  const [restaurants, setRestaurants] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Location / distance / fee / ETA
   const [coords, setCoords] = useState(null);
   const [distanceText, setDistanceText] = useState("");
   const [distanceKm, setDistanceKm] = useState(null);
-  const [deliveryFee, setDeliveryFee] = useState(50);
+  const [deliveryFee, setDeliveryFee] = useState(null);
   const [estimatedEtaMin, setEstimatedEtaMin] = useState(null);
   const [inDeliveryArea, setInDeliveryArea] = useState(true);
-  const [restaurants, setRestaurants] = useState([]);
   const [nearestRestaurant, setNearestRestaurant] = useState(null);
 
-  // total
-  const totalGoods = useMemo(() => cart.reduce((s, it) => s + it.price * it.quantity, 0), [cart]);
+  // Total price
+  const totalGoods = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.quantity, 0), [cart]);
 
-  // --- Fetch restaurants ---
+  // Fetch initial data: barangays & restaurants
   useEffect(() => {
-    const fetchRestaurants = async () => {
-      const { data: restData, error: restErr } = await supabase
-        .from("restaurants")
-        .select("id, name, lat, lng, is_active")
-        .eq("is_active", true);
-      if (restErr) console.error("restaurants err", restErr);
-      if (restData) {
-        const normalized = restData.map(r => ({ ...r, lat: parseFloat(r.lat), lng: parseFloat(r.lng) }));
-        setRestaurants(normalized);
+    const fetchData = async () => {
+      try {
+        // Delivery zones (for polygon or barangay)
+        const { data: zonesData } = await supabase
+          .from("delivery_zones")
+          .select("barangay_name, polygon_points, is_active")
+          .eq("is_active", true);
+
+        if (zonesData) {
+          setDeliveryZones(zonesData);
+          const brs = zonesData.map(z => z.barangay_name).filter(Boolean);
+          setBarangays(brs);
+          if (brs.length > 0 && !address.barangay) {
+            setAddress(prev => ({ ...prev, barangay: brs[0] }));
+          }
+        }
+
+        // Restaurants
+        const { data: restData } = await supabase
+          .from("restaurants")
+          .select("id, name, lat, lng, is_active")
+          .eq("is_active", true);
+
+        if (restData) {
+          const normalized = restData.map(r => ({ ...r, lat: parseFloat(r.lat), lng: parseFloat(r.lng) }));
+          setRestaurants(normalized);
+        }
+      } catch (e) {
+        console.error("fetchData error", e);
       }
     };
-    fetchRestaurants();
+
+    fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---------- Utilities ----------
   const haversineKm = (a, b) => {
     if (!a || !b) return null;
     const toRad = v => (v * Math.PI) / 180;
-    const R = 6371;
+    const R = 6371; // km
     const dLat = toRad(b.lat - a.lat);
     const dLon = toRad(b.lng - a.lng);
-    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-    const sinDlat = Math.sin(dLat / 2), sinDlon = Math.sin(dLon / 2);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+    const sinDlat = Math.sin(dLat / 2);
+    const sinDlon = Math.sin(dLon / 2);
     const x = sinDlat * sinDlat + sinDlon * sinDlon * Math.cos(lat1) * Math.cos(lat2);
-    return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    return R * c;
   };
 
-  const computeDeliveryFee = (km) => {
-    if (km == null) return 50;
+  const pointInPolygon = (point, polygon) => {
+    if (!polygon || polygon.length < 3) return false;
+    const x = point.lng, y = point.lat;
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      const xi = polygon[i].lng, yi = polygon[i].lat;
+      const xj = polygon[j].lng, yj = polygon[j].lat;
+      const intersect = ((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / (yj - yi + Number.EPSILON) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+
+  const computeDeliveryFee = km => {
+    if (km == null) return null;
     if (km <= 2) return 30;
     if (km <= 5) return 50;
     return 70;
   };
 
-  const computeEtaMinutes = (km) => {
+  const computeEtaMinutes = km => {
     if (km == null) return null;
     const avgSpeedKmph = 25;
     return Math.max(5, Math.ceil((km / avgSpeedKmph) * 60));
@@ -81,7 +119,8 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
 
   const findNearestRestaurant = useCallback((userCoords) => {
     if (!restaurants || restaurants.length === 0 || !userCoords) return null;
-    let best = null, bestDist = Infinity;
+    let best = null;
+    let bestDist = Infinity;
     restaurants.forEach(r => {
       if (r.lat == null || r.lng == null) return;
       const d = haversineKm(userCoords, { lat: r.lat, lng: r.lng });
@@ -117,29 +156,25 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
     setEstimatedEtaMin(computeEtaMinutes(dkm));
   }, []);
 
-  // Shipping address string
   const buildShippingAddress = () => `Iligan City, Brgy. ${address.barangay} • ${address.addressDetail}`;
 
-  // Place order
   const handlePlaceOrder = async () => {
     setError("");
-    if (!user) { setError("User not authenticated."); return; }
-    if (!address.name || !address.phone || !address.barangay || !address.addressDetail) {
-      setError("Please fill Recipient Name, Phone, Barangay, and Full Address details."); return;
-    }
-    if (cart.length === 0) { setError("Your cart is empty."); return; }
-    if (!inDeliveryArea) { setError("Address is outside our delivery area."); return; }
+    if (!user) return setError("User not authenticated.");
+    if (!address.name || !address.phone || !address.barangay || !address.addressDetail)
+      return setError("Please fill Recipient Name, Phone, Barangay, and Full Address details.");
+    if (cart.length === 0) return setError("Your cart is empty.");
+    if (!inDeliveryArea) return setError("Address is outside our delivery area.");
 
     setLoading(true);
     try {
       const shipping_address_combined = buildShippingAddress();
-
       let finalLat = coords?.lat || null;
       let finalLng = coords?.lng || null;
 
       if ((!finalLat || !finalLng) && typeof window !== "undefined" && window.google) {
         const geocoder = new window.google.maps.Geocoder();
-        const g = await new Promise(resolve => {
+        const geoPromise = () => new Promise(resolve => {
           geocoder.geocode({ address: shipping_address_combined }, (results, status) => {
             if (status === "OK" && results[0]) {
               const loc = results[0].geometry.location;
@@ -147,6 +182,7 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
             } else resolve(null);
           });
         });
+        const g = await geoPromise();
         if (g) { finalLat = g.lat; finalLng = g.lng; }
       }
 
@@ -163,12 +199,11 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
         distance_km: distanceKm,
         delivery_fee: deliveryFee,
         estimated_eta_minutes: estimatedEtaMin,
-        restaurant_id: nearestRestaurant?.id || null
+        restaurant_id: nearestRestaurant?.id || null,
       };
 
       const { data: newOrder, error: orderError } = await supabase.from("orders").insert(orderPayload).select().single();
       if (orderError) throw orderError;
-      if (!newOrder) throw new Error("No order returned after insert.");
 
       const orderId = newOrder.id;
       const itemData = cart.map(item => ({
@@ -176,39 +211,39 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
         food_item_id: item.id,
         name: item.name,
         price: item.price,
-        quantity: item.quantity,
+        quantity: item.quantity
       }));
 
       const { error: itemsErr } = await supabase.from("order_items").insert(itemData);
-      if (itemsErr) {
-        await supabase.from("orders").delete().eq("id", orderId);
-        throw itemsErr;
-      }
+      if (itemsErr) await supabase.from("orders").delete().eq("id", orderId), setError("Failed to insert order items.");
 
       setCart([]);
-      const orderForTracking = {
-        ...newOrder,
-        order_items: itemData,
-        restaurant_name: nearestRestaurant?.name || "Unknown Restaurant"
-      };
-      setPage("tracking", orderForTracking);
-
+      setPage("tracking", { ...newOrder, order_items: itemData, restaurant_name: nearestRestaurant?.name || "Unknown Restaurant" });
     } catch (e) {
       console.error("placeOrder error", e);
       setError("Failed to place order. " + (e.message || e));
     } finally { setLoading(false); }
   };
 
-  // Check delivery area (for Iligan we allow all barangays)
+  // Validate delivery area
   useEffect(() => {
-    setInDeliveryArea(ILIGAN_BRGYS.includes(address.barangay));
-  }, [address.barangay]);
+    if (!coords) return setInDeliveryArea(true);
+
+    const zonesWithPolys = deliveryZones.filter(z => z.polygon_points?.length > 2);
+    if (zonesWithPolys.length > 0) {
+      setInDeliveryArea(zonesWithPolys.some(z => pointInPolygon(coords, z.polygon_points)));
+      return;
+    }
+
+    const allowedBarangays = deliveryZones.map(z => z.barangay_name).filter(Boolean);
+    if (allowedBarangays.length > 0) setInDeliveryArea(allowedBarangays.includes(address.barangay));
+    else setInDeliveryArea(true);
+  }, [coords, deliveryZones, address.barangay]);
 
   return (
     <div className="p-4 md:p-6 mx-auto w-full max-w-3xl">
       <SectionTitle icon="🛵" title="Final Step: Confirm Delivery" />
       <div className="bg-white p-6 rounded-2xl shadow-xl space-y-6">
-        {/* Delivery details */}
         <div className="border-b pb-4" style={{ borderColor: BORDER }}>
           <h3 className="font-bold text-lg mb-4" style={{ color: NAVY }}>
             <span className="text-xl mr-2">🏠</span>Delivery Details
@@ -221,40 +256,22 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
           />
 
           <div className="space-y-3">
-            <StyledInput
-              placeholder="Recipient Name"
-              value={address.name}
-              onChange={e => setAddress(prev => ({ ...prev, name: e.target.value }))}
-              required
-            />
-            <StyledInput
-              type="tel"
-              placeholder="Phone Number"
-              value={address.phone}
-              onChange={e => setAddress(prev => ({ ...prev, phone: e.target.value }))}
-              required
-            />
+            <StyledInput placeholder="Recipient Name" value={address.name} onChange={e => setAddress(prev => ({ ...prev, name: e.target.value }))} required />
+            <StyledInput type="tel" placeholder="Phone Number" value={address.phone} onChange={e => setAddress(prev => ({ ...prev, phone: e.target.value }))} required />
 
-            {/* Barangay Dropdown */}
             <div>
-              <label className="text-xs font-semibold text-gray-600 mb-1">Barangay (Iligan City Only)</label>
+              <label className="text-xs font-semibold text-gray-600">Barangay (Iligan City Only)</label>
               <select
                 value={address.barangay}
                 onChange={e => setAddress(prev => ({ ...prev, barangay: e.target.value }))}
-                className="w-full p-3 border border-gray-300 rounded-lg bg-white font-semibold focus:ring-2 focus:ring-offset-0 input-focus-shopee"
+                className="w-full p-3 border border-gray-300 rounded-lg appearance-none bg-white font-semibold focus:ring-2 focus:ring-offset-0 input-focus-shopee"
+                disabled={barangays.length === 0}
               >
-                {ILIGAN_BRGYS.map(b => <option key={b} value={b}>{b}</option>)}
+                {barangays.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
             </div>
 
-            <StyledInput
-              placeholder="Street / Unit / House No."
-              value={address.addressDetail}
-              onChange={e => setAddress(prev => ({ ...prev, addressDetail: e.target.value }))}
-              rows="3"
-              isTextArea
-              required
-            />
+            <StyledInput placeholder="Street / Unit / House No." value={address.addressDetail} onChange={e => setAddress(prev => ({ ...prev, addressDetail: e.target.value }))} rows="3" isTextArea required />
           </div>
         </div>
 
@@ -264,47 +281,36 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
             <span className="text-xl mr-2">💳</span>Payment Method
           </h3>
           <div className="relative">
-            <select
-              value={address.payment}
-              onChange={e => setAddress(prev => ({ ...prev, payment: e.target.value }))}
-              className="w-full p-3 border border-gray-300 rounded-lg bg-white font-semibold focus:ring-2 focus:ring-offset-0 input-focus-shopee"
-              style={{ paddingRight: "2.5rem" }}
-            >
+            <select value={address.payment} onChange={e => setAddress(prev => ({ ...prev, payment: e.target.value }))} className="w-full p-3 border border-gray-300 rounded-lg appearance-none bg-white font-semibold focus:ring-2 focus:ring-offset-0 input-focus-shopee" style={{ paddingRight: "2.5rem" }}>
               <option value="COD">Cash on Delivery (COD) - Preferred</option>
               <option value="E-Wallet">GCash/Maya (E-Wallet)</option>
               <option value="CreditCard">Credit/Debit Card</option>
             </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-700">
-              <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
-              </svg>
-            </div>
           </div>
         </div>
 
-        {/* Order summary */}
+        {/* Order Summary */}
         <div className="pt-2">
           <h3 className="font-bold text-lg mb-3" style={{ color: NAVY }}>
             <span className="text-xl mr-2">🧾</span>Order Summary
           </h3>
+
           <p className="text-lg flex justify-between mb-2 text-gray-600">
             <span>Subtotal ({cart.length} items):</span>
             <span className="font-semibold">₱{totalGoods.toFixed(2)}</span>
           </p>
+
           <p className="text-lg flex justify-between text-gray-600 border-b pb-3 mb-3" style={{ borderColor: BORDER }}>
             <span>Delivery Fee:</span>
-            <span className="font-semibold">₱{deliveryFee.toFixed(2)}</span>
+            <span className="font-semibold">₱{deliveryFee != null ? deliveryFee.toFixed(2) : "—"}</span>
           </p>
-          <p className="text-sm text-gray-600 mb-2">
-            {distanceText && <>🚗 Distance: <strong>{distanceText}</strong></>}
-            {distanceKm != null && <span> • {distanceKm.toFixed(2)} km</span>}
-          </p>
-          {estimatedEtaMin != null && (
-            <p className="text-sm text-gray-600 mb-3">⏱️ ETA: <strong>{estimatedEtaMin} min</strong></p>
-          )}
+
+          {distanceText && <p className="text-sm text-gray-600 mb-2">🚗 Distance: <strong>{distanceText}</strong> {distanceKm != null && <>• {distanceKm.toFixed(2)} km</>}</p>}
+          {estimatedEtaMin != null && <p className="text-sm text-gray-600 mb-3">⏱️ ETA: <strong>{estimatedEtaMin} min</strong></p>}
+
           <p className="text-2xl font-extrabold flex justify-between">
             <span>TOTAL:</span>
-            <span style={{ color: ORANGE }}>₱{(totalGoods + deliveryFee).toFixed(2)}</span>
+            <span style={{ color: ORANGE }}>₱{(totalGoods + (deliveryFee || 0)).toFixed(2)}</span>
           </p>
         </div>
 
@@ -314,10 +320,7 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
       </div>
 
       <div className="mt-6">
-        <FoodButton
-          onClick={handlePlaceOrder}
-          disabled={loading || cart.length === 0 || !inDeliveryArea}
-        >
+        <FoodButton onClick={handlePlaceOrder} disabled={loading || barangays.length === 0 || cart.length === 0 || !inDeliveryArea}>
           {loading ? "Processing..." : "Place Order Now"}
         </FoodButton>
 
