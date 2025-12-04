@@ -28,7 +28,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
   const [coords, setCoords] = useState(null);
   const [distanceText, setDistanceText] = useState("");
   const [distanceKm, setDistanceKm] = useState(null);
-  const [deliveryFee, setDeliveryFee] = useState(50);
   const [estimatedEtaMin, setEstimatedEtaMin] = useState(null);
   const [inDeliveryArea, setInDeliveryArea] = useState(true);
   const [restaurants, setRestaurants] = useState([]);
@@ -36,6 +35,15 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
 
   // total
   const totalGoods = useMemo(() => cart.reduce((s, it) => s + it.price * it.quantity, 0), [cart]);
+
+  // compute delivery fee dynamically
+  const computeDeliveryFee = (km) => {
+    if (km == null) return 50;
+    if (km <= 2) return 30;
+    if (km <= 5) return 50;
+    return 70;
+  };
+  const deliveryFee = useMemo(() => computeDeliveryFee(distanceKm), [distanceKm]);
 
   // --- Fetch restaurants ---
   useEffect(() => {
@@ -64,13 +72,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
     const sinDlat = Math.sin(dLat / 2), sinDlon = Math.sin(dLon / 2);
     const x = sinDlat * sinDlat + sinDlon * sinDlon * Math.cos(lat1) * Math.cos(lat2);
     return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
-  };
-
-  const computeDeliveryFee = (km) => {
-    if (km == null) return 50;
-    if (km <= 2) return 30;
-    if (km <= 5) return 50;
-    return 70;
   };
 
   const computeEtaMinutes = (km) => {
@@ -105,7 +106,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
       if (nearest) setNearestRestaurant(nearest);
       const roughKm = nearest ? haversineKm(newCoords, { lat: nearest.lat, lng: nearest.lng }) : null;
       setDistanceKm(roughKm);
-      setDeliveryFee(computeDeliveryFee(roughKm));
       setEstimatedEtaMin(computeEtaMinutes(roughKm));
     }
   }, [findNearestRestaurant]);
@@ -113,7 +113,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
   const handleDistanceFromMap = useCallback(({ distanceText: dt, distanceKm: dkm }) => {
     setDistanceText(dt || "");
     setDistanceKm(dkm);
-    setDeliveryFee(computeDeliveryFee(dkm));
     setEstimatedEtaMin(computeEtaMinutes(dkm));
   }, []);
 
@@ -161,7 +160,7 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
         shipping_lat: finalLat,
         shipping_lng: finalLng,
         distance_km: distanceKm,
-        delivery_fee: deliveryFee,
+        delivery_fee: deliveryFee, // auto-generated
         estimated_eta_minutes: estimatedEtaMin,
         restaurant_id: nearestRestaurant?.id || null
       };
