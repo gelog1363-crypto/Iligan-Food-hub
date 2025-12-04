@@ -146,21 +146,19 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
         if (g) { finalLat = g.lat; finalLng = g.lng; }
       }
 
-      const orderPayload = {
-        user_id: user.id,
-        total: totalGoods,
-        shipping_address: shipping_address_combined,
-        contact_name: address.name,
-        contact_phone: address.phone,
-        payment_method: address.payment,
-        status: ORDER_STATUSES[0],
-        shipping_lat: finalLat,
-        shipping_lng: finalLng,
-        distance_km: distanceKm,
-        estimated_eta_minutes: estimatedEtaMin,
-        restaurant_id: nearestRestaurant?.id || null
-        // delivery_fee removed to match DB schema
-      };
+const orderPayload = {
+  user_id: user.id,
+  total: totalGoods,
+  shipping_address: shipping_address_combined,
+  contact_name: address.name,
+  contact_phone: address.phone,
+  payment_method: address.payment,
+  status: ORDER_STATUSES[0],
+  shipping_lat: finalLat,
+  shipping_lng: finalLng,
+  estimated_eta_minutes: estimatedEtaMin,
+  restaurant_id: nearestRestaurant?.id || null
+};
 
       const { data: newOrder, error: orderError } = await supabase.from("orders").insert(orderPayload).select().single();
       if (orderError) throw orderError;
