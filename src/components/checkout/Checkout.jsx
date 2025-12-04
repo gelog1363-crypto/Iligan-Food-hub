@@ -1,7 +1,6 @@
 // components/checkout/Checkout.jsx
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { supabase } from "../../config/supabase";
-import { ORANGE, NAVY, BORDER, ORDER_STATUSES } from "../../config/constants";
+import { ORANGE, NAVY, BORDER } from "../../config/constants";
 import { SectionTitle } from "../common/SectionTitle";
 import { FoodButton } from "../common/FoodButton";
 import { StyledInput } from "../common/StyledInput";
@@ -22,8 +21,6 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
   const [address, setAddress] = useState({
     name: "", phone: "", addressDetail: "", barangay: ILIGAN_BRGYS[0], payment: "COD"
   });
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
   const [coords, setCoords] = useState(null);
   const [distanceText, setDistanceText] = useState("");
   const [distanceKm, setDistanceKm] = useState(null);
@@ -31,10 +28,11 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
   const [inDeliveryArea, setInDeliveryArea] = useState(true);
   const [restaurants, setRestaurants] = useState([]);
   const [nearestRestaurant, setNearestRestaurant] = useState(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const totalGoods = useMemo(() => cart.reduce((s, it) => s + it.price * it.quantity, 0), [cart]);
 
-  // compute delivery fee dynamically for UI
   const computeDeliveryFee = (km) => {
     if (km == null) return 50;
     if (km <= 2) return 30;
@@ -43,23 +41,7 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
   };
   const deliveryFee = useMemo(() => computeDeliveryFee(distanceKm), [distanceKm]);
 
-  // --- Fetch restaurants ---
-  useEffect(() => {
-    const fetchRestaurants = async () => {
-      const { data: restData, error: restErr } = await supabase
-        .from("restaurants")
-        .select("id, name, lat, lng, is_active")
-        .eq("is_active", true);
-      if (restErr) console.error("restaurants err", restErr);
-      if (restData) {
-        const normalized = restData.map(r => ({ ...r, lat: parseFloat(r.lat), lng: parseFloat(r.lng) }));
-        setRestaurants(normalized);
-      }
-    };
-    fetchRestaurants();
-  }, []);
-
-  // ---------- Utilities ----------
+  // --- Utilities ---
   const haversineKm = (a, b) => {
     if (!a || !b) return null;
     const toRad = v => (v * Math.PI) / 180;
@@ -116,10 +98,8 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
 
   const buildShippingAddress = () => `Iligan City, Brgy. ${address.barangay} • ${address.addressDetail}`;
 
-  // Place order
   const handlePlaceOrder = async () => {
     setError("");
-    if (!user) { setError("User not authenticated."); return; }
     if (!address.name || !address.phone || !address.barangay || !address.addressDetail) {
       setError("Please fill Recipient Name, Phone, Barangay, and Full Address details."); return;
     }
@@ -128,65 +108,23 @@ export const Checkout = ({ setPage, cart, setCart, user }) => {
 
     setLoading(true);
     try {
-      const shipping_address_combined = buildShippingAddress();
-
-      let finalLat = coords?.lat || null;
-      let finalLng = coords?.lng || null;
-
-      if ((!finalLat || !finalLng) && typeof window !== "undefined" && window.google) {
-        const geocoder = new window.google.maps.Geocoder();
-        const g = await new Promise(resolve => {
-          geocoder.geocode({ address: shipping_address_combined }, (results, status) => {
-            if (status === "OK" && results[0]) {
-              const loc = results[0].geometry.location;
-              resolve({ lat: loc.lat(), lng: loc.lng() });
-            } else resolve(null);
-          });
-        });
-        if (g) { finalLat = g.lat; finalLng = g.lng; }
-      }
-
-const orderPayload = {
-        user_id: user.id,
-        total: total,
-        shipping_address: shipping_address_combined,
-        contact_name: address.name,
-        contact_phone: address.phone,
-        payment_method: address.payment,
-        status: ORDER_STATUSES[0], // Typically 'Pending' or 'New'
-      };
-
-      const { data: newOrder, error: orderError } = await supabase.from("orders").insert(orderPayload).select().single();
-      if (orderError) throw orderError;
-      if (!newOrder) throw new Error("No order returned after insert.");
-
-      const orderId = newOrder.id;
-      const itemData = cart.map(item => ({
-        order_id: orderId,
-        food_item_id: item.id,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-      }));
-
-      const { error: itemsErr } = await supabase.from("order_items").insert(itemData);
-      if (itemsErr) {
-        await supabase.from("orders").delete().eq("id", orderId);
-        throw itemsErr;
-      }
-
-      setCart([]);
+      // simulate order success since we have no DB
       const orderForTracking = {
-        ...newOrder,
-        order_items: itemData,
+        user_id: user?.id || "guest",
+        order_items: cart,
+        shipping_address: buildShippingAddress(),
+        delivery_fee: deliveryFee,
+        estimated_eta_minutes: estimatedEtaMin,
         restaurant_name: nearestRestaurant?.name || "Unknown Restaurant"
       };
-      setPage("tracking", orderForTracking);
 
+      setCart([]);
+      setPage("tracking", orderForTracking);
     } catch (e) {
-      console.error("placeOrder error", e);
       setError("Failed to place order. " + (e.message || e));
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -197,6 +135,7 @@ const orderPayload = {
     <div className="p-4 md:p-6 mx-auto w-full max-w-3xl">
       <SectionTitle icon="🛵" title="Final Step: Confirm Delivery" />
       <div className="bg-white p-6 rounded-2xl shadow-xl space-y-6">
+
         {/* Delivery details */}
         <div className="border-b pb-4" style={{ borderColor: BORDER }}>
           <h3 className="font-bold text-lg mb-4" style={{ color: NAVY }}>
